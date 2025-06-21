@@ -1,0 +1,16 @@
+# Web Framework
+Flask
+flask-cors
+
+# Environment and Configuration Management
+python-dotenv
+
+# LangChain Core Framework and Community Tools
+langchain
+langchain-community
+
+# Google Gemini LLM Integration
+langchain-google-genai
+
+# Database ORM and Toolkit
+SQLAlchemy
