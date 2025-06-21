@@ -33,7 +33,7 @@ from typing import Dict, Any, Optional
 
 from backend.app.config import Config
 from backend.app.utils.logger import get_logger, log_exception
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 # Initialize logger for this module
@@ -162,9 +162,7 @@ class LLMService:
                 temperature=self.config.LLM_TEMPERATURE,
                 max_retries=self.config.LLM_MAX_RETRIES,
                 timeout=self.config.LLM_TIMEOUT,
-                google_api_key=self.config.GOOGLE_API_KEY,
-                # Additional safety settings for SQL generation
-                convert_system_message_to_human=True,  # Gemini doesn't support system messages directly
+                google_api_key=self.config.GOOGLE_API_KEY
             )
 
             logger.info("Gemini LLM instance created successfully")
@@ -249,10 +247,7 @@ class LLMService:
             messages = []
 
             if system_prompt:
-                # Convert system message to human message with special formatting
-                # since Gemini doesn't support system messages directly
-                formatted_system = f"System instructions: {system_prompt}\n\nUser question: {prompt}"
-                messages.append(HumanMessage(content=formatted_system))
+                messages.append(SystemMessage(content=system_prompt))
             else:
                 messages.append(HumanMessage(content=prompt))
 
