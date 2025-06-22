@@ -72,8 +72,8 @@ export function ActionCard({
   const cardColors = getCategoryColor(action.category);
   const badgeColors = getCategoryBadgeColor(action.category);
 
-  const isSQL = action.tool.includes('query') && action.input.trim();
-
+  const isSQL = action.tool.includes('query') && typeof action.input === 'string' && action.input.trim();
+  
   return (
     <motion.div
       initial={{ opacity: 0, y: 20, scale: 0.95 }}
@@ -157,9 +157,11 @@ export function ActionCard({
                   </span>
                 </div>
                 <div className="sql-container">
-                  <pre className="text-sm text-gray-300 whitespace-pre-wrap">
-                    {action.input}
-                  </pre>
+                <pre className="text-sm text-gray-300 whitespace-pre-wrap">
+                  {typeof action.input === 'object' 
+                    ? JSON.stringify(action.input, null, 2) 
+                    : action.input}
+                </pre>
                 </div>
               </div>
             )}
