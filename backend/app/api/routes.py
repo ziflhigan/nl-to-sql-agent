@@ -4,7 +4,7 @@ Streaming API Routes for Real-time ReAct Loop Processing
 This module provides Server-Sent Events (SSE) endpoints for streaming
 the agent's thought process in real-time.
 """
-
+import json
 import time
 from datetime import datetime
 from typing import Dict, Any
@@ -22,6 +22,24 @@ logger = get_logger(__name__)
 MAX_REQUEST_SIZE = 1024 * 1024
 MAX_QUESTION_LENGTH = 1000
 MIN_QUESTION_LENGTH = 3
+
+
+def create_error_stream(message: str, error_type: str, request_id: str) -> Response:
+    """Creates a streaming response for sending an error."""
+    def error_stream():
+        yield (f"event: error\ndata: {json.dumps({'type': error_type, 
+                                                  'message': message, 
+                                                  'request_id': request_id})}\n\n")
+    return Response(
+        error_stream(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': 'Content-Type'
+        }
+    )
 
 
 def get_request_id() -> str:
@@ -141,23 +159,7 @@ def chat_stream():
             data = validate_streaming_request()
         except BadRequest as e:
             logger.warning(f"Invalid streaming request: {e}")
-
-            # For streaming, we need to return an error event
-            def error_stream():
-                yield (f"event: error\ndata: {{'type': 'error', "
-                       f"'message': '{str(e)}', "
-                       f"'request_id': '{request_id}'}}\n\n")
-
-            return Response(
-                error_stream(),
-                mimetype='text/event-stream',
-                headers={
-                    'Cache-Control': 'no-cache',
-                    'Connection': 'keep-alive',
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Headers': 'Content-Type'
-                }
-            )
+            return create_error_stream(str(e), 'validation_error', request_id)
 
         # Extract and validate question
         question = data.get('question', '')
@@ -165,43 +167,13 @@ def chat_stream():
             question = validate_question(question)
         except BadRequest as e:
             logger.warning(f"Invalid question in streaming request: {e}")
-
-            def error_stream():
-                yield (f"event: error\ndata: {{'type': 'validation_error', "
-                       f"'message': '{str(e)}', "
-                       f"'request_id': '{request_id}'}}\n\n")
-
-            return Response(
-                error_stream(),
-                mimetype='text/event-stream',
-                headers={
-                    'Cache-Control': 'no-cache',
-                    'Connection': 'keep-alive',
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Headers': 'Content-Type'
-                }
-            )
+            return create_error_stream(str(e), 'validation_error', request_id)
 
         # Get streaming agent service
         streaming_agent_service = getattr(current_app, 'streaming_agent_service', None)
         if not streaming_agent_service:
             logger.error("Streaming agent service not available")
-
-            def error_stream():
-                yield (f"event: error\ndata: {{'type': 'service_error', "
-                       f"'message': 'Streaming service not available', "
-                       f"'request_id': '{request_id}'}}\n\n")
-
-            return Response(
-                error_stream(),
-                mimetype='text/event-stream',
-                headers={
-                    'Cache-Control': 'no-cache',
-                    'Connection': 'keep-alive',
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Headers': 'Content-Type'
-                }
-            )
+            return create_error_stream('Streaming service not available', 'service_error', request_id)
 
         # Log the streaming request
         question_preview = question[:100] + "..." if len(question) > 100 else question
@@ -234,22 +206,7 @@ def chat_stream():
 
     except Exception as e:
         log_exception(logger, e, "chat_stream endpoint")
-
-        def error_stream():
-            yield (f"event: error\ndata: {{'type': 'internal_error', "
-                   f"'message': 'Unexpected error occurred', "
-                   f"'request_id': '{request_id}'}}\n\n")
-
-        return Response(
-            error_stream(),
-            mimetype='text/event-stream',
-            headers={
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Headers': 'Content-Type'
-            }
-        )
+        return create_error_stream('Unexpected error occurred', 'internal_error', request_id)
 
 
 @api_bp.route('/chat', methods=['POST'])
