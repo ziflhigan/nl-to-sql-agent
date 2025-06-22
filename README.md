@@ -13,6 +13,9 @@ The core vision is to democratize data access, allowing non-technical users to a
   * **Interactive & Animated UI:** A modern frontend built with React, TypeScript, and Tailwind CSS provides a highly interactive and visually appealing user experience, with animations managed by Framer Motion.
   * **Robust Backend Services:** The backend is not a monolithic script but a collection of well-defined services for LLM interaction, database management, and agent orchestration, featuring comprehensive logging and error handling.
 
+## High-Level Overview
+![High-Level-Overview](https://github.com/user-attachments/assets/befd338b-4e7f-4b6f-b418-453967619e35)
+
 ## Demo & Screenshots
 
 ### Live Application Demo
