@@ -1,4 +1,4 @@
-# Full-Stack, Real-time Streaming NL-to-SQL Agent
+# Real-time Streaming NL-to-SQL Agent
 
 This project is a sophisticated, full-stack application that features a powerful Natural Language to SQL (NL-to-SQL) agent. It is designed to bridge the gap between human language and structured databases, enabling users to gain insights from complex data through an intuitive, real-time conversational interface.
 
@@ -19,14 +19,15 @@ The core vision is to democratize data access, allowing non-technical users to a
 
 Watch the real-time streaming agent in action as it interprets a user's question, thinks through the problem, and delivers the final answer.
 
-
+https://github.com/user-attachments/assets/ceb13379-93ff-4230-9aad-f1c2da7758ae
 
 ### Backend Logging
 
 The backend features a robust, centralized logging system that separates informational logs from errors, with daily rotation. This is crucial for monitoring and debugging in both development and production environments.
 
-**Info Log**
-
+**Info Logs**
+![Screenshot 2025-06-22 211745](https://github.com/user-attachments/assets/8a368a7e-dc1d-44fa-86d8-699c40e32f13)
+![Screenshot 2025-06-22 211802](https://github.com/user-attachments/assets/fddedaf0-9550-4713-b876-0e5041ddf5af)
 
 
 ## How to Set Up and Run the Project
