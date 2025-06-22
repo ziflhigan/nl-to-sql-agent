@@ -1,52 +1,25 @@
 """
-API Routes for NL-to-SQL Agent
+Streaming API Routes for Real-time ReAct Loop Processing
 
-This module implements the Flask API routes that provide HTTP endpoints
-for the NL-to-SQL agent functionality. All routes follow RESTful principles
-and return consistent JSON responses.
-
-Endpoints:
-- POST /api/v1/chat - Process natural language queries
-- GET /api/v1/health - Basic application health check
-- GET /api/v1/status - Comprehensive service status and statistics
-
-Response Format:
-All endpoints return JSON in the following format:
-{
-    "data": <response_data> | null,
-    "error": null | {
-        "code": <http_status_code>,
-        "message": "<user_friendly_message>",
-        "type": "<error_type>"
-    }
-}
-
-Rate Limiting and Security:
-- Input validation on all endpoints
-- SQL injection prevention
-- Request size limits
-- Error message sanitization
+This module provides Server-Sent Events (SSE) endpoints for streaming
+the agent's thought process in real-time.
 """
 
 import time
-from typing import Dict, Any, Optional
 from datetime import datetime
-from flask import request, jsonify, current_app, g
+from typing import Dict, Any
+
+from flask import request, jsonify, current_app, Response
 from werkzeug.exceptions import BadRequest
 
-from . import api_bp
 from backend.app.utils.logger import get_logger, log_function_call, log_exception
-from .. import DatabaseError
-from ..services.agent_service import AgentTimeoutError, AgentExecutionError, AgentError
-from ..services.llm_service import LLMRateLimitError, LLMTimeoutError, LLMError
+from . import api_bp
 
 # Initialize logger for this module
 logger = get_logger(__name__)
 
 # Request size limit (1MB)
 MAX_REQUEST_SIZE = 1024 * 1024
-
-# Rate limiting constants
 MAX_QUESTION_LENGTH = 1000
 MIN_QUESTION_LENGTH = 3
 
@@ -56,31 +29,36 @@ def get_request_id() -> str:
     return f"req_{int(time.time() * 1000)}"
 
 
-def validate_json_request() -> Dict[str, Any]:
+def validate_streaming_request() -> Dict[str, Any]:
     """
-    Validate and parse JSON request body.
+    Validate and parse streaming request.
 
     Returns:
-        Parsed JSON data
+        Parsed request data
 
     Raises:
         BadRequest: If request is invalid
     """
-    if not request.is_json:
-        raise BadRequest("Content-Type must be application/json")
+    # For streaming, we can accept both JSON and form data
+    if request.is_json:
+        try:
+            data = request.get_json(force=True)
+            if data is None:
+                raise BadRequest("Request body must contain valid JSON")
+            return data
+        except Exception as e:
+            logger.warning(f"Invalid JSON in streaming request: {e}")
+            raise BadRequest("Invalid JSON format")
+    else:
+        # Handle form data or query parameters
+        question = request.form.get('question') or request.args.get('question')
+        if not question:
+            raise BadRequest("Question parameter is required")
 
-    if request.content_length and request.content_length > MAX_REQUEST_SIZE:
-        raise BadRequest(f"Request size too large (max: {MAX_REQUEST_SIZE} bytes)")
-
-    try:
-        data = request.get_json(force=True)
-        if data is None:
-            raise BadRequest("Request body must contain valid JSON")
-        return data
-
-    except Exception as e:
-        logger.warning(f"Invalid JSON in request: {e}")
-        raise BadRequest("Invalid JSON format")
+        return {
+            'question': question,
+            'include_intermediate_steps': True  # Always true for streaming
+        }
 
 
 def validate_question(question: str) -> str:
@@ -116,102 +94,353 @@ def validate_question(question: str) -> str:
     return question
 
 
-def create_success_response(data: Any, request_id: Optional[str] = None) -> Dict[str, Any]:
+@api_bp.route('/chat/stream', methods=['POST', 'GET'])
+def chat_stream():
     """
-    Create standardized success response.
+    Real-time streaming chat endpoint using Server-Sent Events (SSE).
 
-    Args:
-        data: Response data
-        request_id: Optional request ID for tracking
+    This endpoint streams the agent's thought process in real-time as it executes,
+    providing immediate feedback to users about what the AI is thinking and doing.
 
-    Returns:
-        Formatted success response
-    """
-    response = {
-        "data": data,
-        "error": None
-    }
+    Request Methods:
+        POST: Send question in JSON body
+        GET: Send question as query parameter (for easier testing)
 
-    if request_id:
-        response["request_id"] = request_id
-
-    return response
-
-
-def create_error_response(message: str, error_type: str = "error",
-                          status_code: int = 400, request_id: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Create standardized error response.
-
-    Args:
-        message: Error message for user
-        error_type: Type of error for categorization
-        status_code: HTTP status code
-        request_id: Optional request ID for tracking
-
-    Returns:
-        Formatted error response
-    """
-    response = {
-        "data": None,
-        "error": {
-            "code": status_code,
-            "message": message,
-            "type": error_type
+    Request Body (POST):
+        {
+            "question": "string (required)"
         }
-    }
 
-    if request_id:
-        response["request_id"] = request_id
+    Query Parameters (GET):
+        ?question=<your_question>
 
-    return response
+    Response:
+        Server-Sent Events stream with the following event types:
+        - execution_start: Query processing begins
+        - agent_action: AI takes an action (with thought process)
+        - agent_observation: Result from the action
+        - agent_finish: Final answer generated
+        - agent_error: Error occurred
+        - execution_summary: Execution completed
+        - execution_complete: Stream ends
+        - heartbeat: Keep-alive signal
+
+    Headers:
+        Content-Type: text/event-stream
+        Cache-Control: no-cache
+        Connection: keep-alive
+        Access-Control-Allow-Origin: *
+    """
+    request_id = get_request_id()
+
+    try:
+        log_function_call("chat_stream", (), {"request_id": request_id})
+
+        # Validate request
+        try:
+            data = validate_streaming_request()
+        except BadRequest as e:
+            logger.warning(f"Invalid streaming request: {e}")
+
+            # For streaming, we need to return an error event
+            def error_stream():
+                yield (f"event: error\ndata: {{'type': 'error', "
+                       f"'message': '{str(e)}', "
+                       f"'request_id': '{request_id}'}}\n\n")
+
+            return Response(
+                error_stream(),
+                mimetype='text/event-stream',
+                headers={
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Headers': 'Content-Type'
+                }
+            )
+
+        # Extract and validate question
+        question = data.get('question', '')
+        try:
+            question = validate_question(question)
+        except BadRequest as e:
+            logger.warning(f"Invalid question in streaming request: {e}")
+
+            def error_stream():
+                yield (f"event: error\ndata: {{'type': 'validation_error', "
+                       f"'message': '{str(e)}', "
+                       f"'request_id': '{request_id}'}}\n\n")
+
+            return Response(
+                error_stream(),
+                mimetype='text/event-stream',
+                headers={
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Headers': 'Content-Type'
+                }
+            )
+
+        # Get streaming agent service
+        streaming_agent_service = getattr(current_app, 'streaming_agent_service', None)
+        if not streaming_agent_service:
+            logger.error("Streaming agent service not available")
+
+            def error_stream():
+                yield (f"event: error\ndata: {{'type': 'service_error', "
+                       f"'message': 'Streaming service not available', "
+                       f"'request_id': '{request_id}'}}\n\n")
+
+            return Response(
+                error_stream(),
+                mimetype='text/event-stream',
+                headers={
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Headers': 'Content-Type'
+                }
+            )
+
+        # Log the streaming request
+        question_preview = question[:100] + "..." if len(question) > 100 else question
+        logger.info(f"Starting streaming chat for question: {question_preview}")
+
+        # Create the streaming response
+        def generate_stream():
+            try:
+                for event_data in streaming_agent_service.stream_agent_execution(question):
+                    yield event_data
+
+            except Exception as exc:
+                log_exception(logger, exc, "streaming chat execution")
+                error_event = (f"event: error\ndata: {{'type': 'execution_error', "
+                               f"'message': 'Streaming execution failed', "
+                               f"'request_id': '{request_id}'}}\n\n")
+                yield error_event
+
+        return Response(
+            generate_stream(),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Headers': 'Content-Type',
+                'X-Request-ID': request_id
+            }
+        )
+
+    except Exception as e:
+        log_exception(logger, e, "chat_stream endpoint")
+
+        def error_stream():
+            yield (f"event: error\ndata: {{'type': 'internal_error', "
+                   f"'message': 'Unexpected error occurred', "
+                   f"'request_id': '{request_id}'}}\n\n")
+
+        return Response(
+            error_stream(),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Headers': 'Content-Type'
+            }
+        )
+
+
+@api_bp.route('/chat', methods=['POST'])
+def chat():
+    """
+    Traditional chat endpoint (non-streaming) for backward compatibility.
+
+    This endpoint works the same as before, returning all results at once
+    after the agent has finished execution.
+    """
+    request_id = get_request_id()
+
+    try:
+        log_function_call("chat", (), {"request_id": request_id})
+        start_time = time.time()
+
+        # Validate request format
+        if not request.is_json:
+            return jsonify({
+                "data": None,
+                "error": {
+                    "code": 400,
+                    "message": "Content-Type must be application/json",
+                    "type": "validation_error"
+                },
+                "success": False,
+                "request_id": request_id
+            }), 400
+
+        try:
+            data = request.get_json(force=True)
+            if data is None:
+                raise BadRequest("Request body must contain valid JSON")
+        except Exception as e:
+            logger.warning(f"Invalid JSON in request: {e}")
+            return jsonify({
+                "data": None,
+                "error": {
+                    "code": 400,
+                    "message": "Invalid JSON format",
+                    "type": "validation_error"
+                },
+                "success": False,
+                "request_id": request_id
+            }), 400
+
+        # Extract and validate question
+        question = data.get('question', '')
+        try:
+            question = validate_question(question)
+        except BadRequest as e:
+            logger.warning(f"Invalid question: {e}")
+            return jsonify({
+                "data": None,
+                "error": {
+                    "code": 400,
+                    "message": str(e),
+                    "type": "validation_error"
+                },
+                "success": False,
+                "request_id": request_id
+            }), 400
+
+        # For non-streaming, we can use either the regular or streaming agent service
+        agent_service = getattr(current_app, 'agent_service', None)
+        if not agent_service:
+            logger.error("Agent service not available")
+            return jsonify({
+                "data": None,
+                "error": {
+                    "code": 503,
+                    "message": "Agent service not available",
+                    "type": "service_error"
+                },
+                "success": False,
+                "request_id": request_id
+            }), 503
+
+        # Extract optional parameters
+        include_intermediate_steps = data.get('include_intermediate_steps', True)
+
+        # Log the incoming question
+        question_preview = question[:100] + "..." if len(question) > 100 else question
+        logger.info(f"Processing non-streaming chat request: {question_preview}")
+
+        # Execute agent query (traditional way)
+        try:
+            result = agent_service.invoke_agent(
+                question=question,
+                include_intermediate_steps=include_intermediate_steps
+            )
+
+            # Add request tracking information
+            result["request_id"] = request_id
+            result["question"] = question
+
+            # Calculate total response time
+            end_time = time.time()
+            total_time = end_time - start_time
+
+            result["timing"] = {
+                "agent_execution_time": result.get('execution_time', 0),
+                "total_response_time": round(total_time, 2),
+                "processing_overhead": round(total_time - result.get('execution_time', 0), 2)
+            }
+
+            logger.info(f"Non-streaming chat request completed successfully "
+                        f"(agent_time: {result.get('execution_time', 0)}s, "
+                        f"total_time: {total_time:.2f}s)")
+
+            return jsonify({
+                "data": result,
+                "error": None,
+                "success": True,
+                "timestamp": datetime.now().isoformat(),
+                "request_id": request_id
+            }), 200
+
+        except Exception as e:
+            logger.error(f"Agent execution error: {e}")
+            return jsonify({
+                "data": None,
+                "error": {
+                    "code": 500,
+                    "message": "Agent execution failed",
+                    "type": "execution_error"
+                },
+                "success": False,
+                "request_id": request_id
+            }), 500
+
+    except Exception as e:
+        log_exception(logger, e, "chat endpoint")
+        return jsonify({
+            "data": None,
+            "error": {
+                "code": 500,
+                "message": "An unexpected error occurred",
+                "type": "internal_error"
+            },
+            "success": False,
+            "request_id": request_id
+        }), 500
 
 
 @api_bp.route('/health', methods=['GET'])
 def health_check():
     """
     Basic health check endpoint.
-
-    Returns simple status to verify the API is running.
-    Used by load balancers and monitoring systems for quick health checks.
-
-    Returns:
-        JSON response with basic health status
     """
     try:
         log_function_call("health_check")
 
-        # Basic health check - just verify app is responding
         health_data = {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
             "version": "1.0.0",
-            "environment": current_app.config_instance.FLASK_ENV
+            "environment": current_app.config_instance.FLASK_ENV,
+            "features": {
+                "streaming": True,
+                "real_time_react": True,
+                "traditional_chat": True
+            }
         }
 
         logger.debug("Health check completed successfully")
-        return jsonify(create_success_response(health_data)), 200
+        return jsonify({
+            "data": health_data,
+            "error": None,
+            "success": True,
+            "timestamp": datetime.now().isoformat()
+        }), 200
 
     except Exception as e:
         log_exception(logger, e, "health_check")
-        return jsonify(create_error_response(
-            "Health check failed",
-            "health_error",
-            500
-        )), 500
+        return jsonify({
+            "data": None,
+            "error": {
+                "code": 500,
+                "message": "Health check failed",
+                "type": "health_error"
+            },
+            "success": False,
+            "timestamp": datetime.now().isoformat()
+        }), 500
 
 
 @api_bp.route('/status', methods=['GET'])
 def status_check():
     """
-    Comprehensive status endpoint.
-
-    Returns detailed status information about all services,
-    including health, statistics, and configuration.
-    Used for monitoring, debugging, and administrative purposes.
-
-    Returns:
-        JSON response with comprehensive service status
+    Comprehensive status endpoint with streaming capabilities info.
     """
     try:
         request_id = get_request_id()
@@ -223,6 +452,7 @@ def status_check():
         database_service = getattr(current_app, 'database_service', None)
         llm_service = getattr(current_app, 'llm_service', None)
         agent_service = getattr(current_app, 'agent_service', None)
+        streaming_agent_service = getattr(current_app, 'streaming_agent_service', None)
 
         # Collect status from all services
         status_data = {
@@ -230,10 +460,19 @@ def status_check():
                 "status": "running",
                 "environment": current_app.config_instance.FLASK_ENV,
                 "debug_mode": current_app.config_instance.FLASK_DEBUG,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "version": "1.0.0"
             },
             "services": {},
-            "overall_healthy": True
+            "overall_healthy": True,
+            "capabilities": {
+                "real_time_streaming": streaming_agent_service is not None,
+                "traditional_chat": agent_service is not None,
+                "react_loop_processing": True,
+                "sql_query_formatting": True,
+                "thought_extraction": True,
+                "server_sent_events": True
+            }
         }
 
         # Database service status
@@ -270,22 +509,38 @@ def status_check():
                 status_data["services"]["llm"] = {"error": "Status check failed"}
                 status_data["overall_healthy"] = False
 
-        # Agent service status
+        # Traditional agent service status
         if agent_service:
             try:
                 agent_status = agent_service.get_agent_status()
                 agent_stats = agent_service.get_usage_statistics()
-                agent_db_info = agent_service.get_database_info()
                 status_data["services"]["agent"] = {
+                    "type": "traditional",
                     "status": agent_status,
-                    "statistics": agent_stats,
-                    "database_info": agent_db_info
+                    "statistics": agent_stats
                 }
                 if not agent_status.get("initialized", False):
                     status_data["overall_healthy"] = False
             except Exception as e:
                 log_exception(logger, e, "agent status check")
                 status_data["services"]["agent"] = {"error": "Status check failed"}
+                status_data["overall_healthy"] = False
+
+        # Streaming agent service status
+        if streaming_agent_service:
+            try:
+                streaming_status = streaming_agent_service.get_agent_status()
+                streaming_stats = streaming_agent_service.get_usage_statistics()
+                status_data["services"]["streaming_agent"] = {
+                    "type": "streaming",
+                    "status": streaming_status,
+                    "statistics": streaming_stats
+                }
+                if not streaming_status.get("initialized", False):
+                    status_data["overall_healthy"] = False
+            except Exception as e:
+                log_exception(logger, e, "streaming agent status check")
+                status_data["services"]["streaming_agent"] = {"error": "Status check failed"}
                 status_data["overall_healthy"] = False
 
         # Update application status based on service health
@@ -299,265 +554,35 @@ def status_check():
         logger.info(f"Status check completed (overall_healthy: {status_data['overall_healthy']}, "
                     f"response_time: {status_data['response_time']}s)")
 
-        return jsonify(create_success_response(status_data, request_id)), 200
+        return jsonify({
+            "data": status_data,
+            "error": None,
+            "success": True,
+            "timestamp": datetime.now().isoformat(),
+            "request_id": request_id
+        }), 200
 
     except Exception as e:
         log_exception(logger, e, "status_check")
-        return jsonify(create_error_response(
-            "Status check failed",
-            "status_error",
-            500,
-            request_id
-        )), 500
-
-
-@api_bp.route('/chat', methods=['POST'])
-def chat():
-    """
-    Main chat endpoint for natural language to SQL queries.
-
-    Processes user questions in natural language and returns SQL query results
-    along with natural language explanations.
-
-    Request Body:
-        {
-            "question": "string",
-            "include_intermediate_steps": boolean (optional, default: true)
-        }
-
-    Response:
-        {
-            "data": {
-                "answer": "string",
-                "execution_time": float,
-                "timestamp": "string",
-                "query_id": "string",
-                "intermediate_steps": [...] (if requested),
-                "metadata": {...}
+        return jsonify({
+            "data": None,
+            "error": {
+                "code": 500,
+                "message": "Status check failed",
+                "type": "status_error"
             },
-            "error": null
-        }
-
-    Returns:
-        JSON response with query results or error information
-    """
-    request_id = get_request_id()
-
-    try:
-        log_function_call("chat", (), {"request_id": request_id})
-        start_time = time.time()
-
-        # Validate request format
-        try:
-            data = validate_json_request()
-        except BadRequest as e:
-            logger.warning(f"Invalid chat request format: {e}")
-            return jsonify(create_error_response(
-                str(e),
-                "validation_error",
-                400,
-                request_id
-            )), 400
-
-        # Extract and validate question
-        question = data.get('question', '')
-        try:
-            question = validate_question(question)
-        except BadRequest as e:
-            logger.warning(f"Invalid question: {e}")
-            return jsonify(create_error_response(
-                str(e),
-                "validation_error",
-                400,
-                request_id
-            )), 400
-
-        # Extract optional parameters
-        include_intermediate_steps = data.get('include_intermediate_steps', True)
-
-        # Get agent service
-        agent_service = getattr(current_app, 'agent_service', None)
-        if not agent_service:
-            logger.error("Agent service not available")
-            return jsonify(create_error_response(
-                "Agent service not available",
-                "service_error",
-                503,
-                request_id
-            )), 503
-
-        # Log the incoming question (truncated for security)
-        question_preview = question[:100] + "..." if len(question) > 100 else question
-        logger.info(f"Processing chat request: {question_preview}")
-
-        # Execute agent query
-        try:
-            result = agent_service.invoke_agent(
-                question=question,
-                include_intermediate_steps=include_intermediate_steps
-            )
-
-            # Add request tracking information
-            result["request_id"] = request_id
-            result["question"] = question
-
-            # Calculate total response time
-            end_time = time.time()
-            total_time = end_time - start_time
-
-            logger.info(f"Chat request completed successfully "
-                        f"(agent_time: {result.get('execution_time', 0)}s, "
-                        f"total_time: {total_time:.2f}s)")
-
-            return jsonify(create_success_response(result, request_id)), 200
-
-        except AgentTimeoutError as e:
-            logger.warning(f"Agent timeout: {e}")
-            return jsonify(create_error_response(
-                "Query took too long to process. Please try a simpler question.",
-                "timeout_error",
-                408,
-                request_id
-            )), 408
-
-        except LLMRateLimitError as e:
-            logger.warning(f"LLM rate limit: {e}")
-            return jsonify(create_error_response(
-                "AI service rate limit reached. Please try again in a few minutes.",
-                "rate_limit_error",
-                429,
-                request_id
-            )), 429
-
-        except LLMTimeoutError as e:
-            logger.warning(f"LLM timeout: {e}")
-            return jsonify(create_error_response(
-                "AI service timeout. Please try again later.",
-                "timeout_error",
-                408,
-                request_id
-            )), 408
-
-        except AgentExecutionError as e:
-            logger.error(f"Agent execution error: {e}")
-            return jsonify(create_error_response(
-                "Unable to process your question. Please try rephrasing it.",
-                "execution_error",
-                422,
-                request_id
-            )), 422
-
-        except DatabaseError as e:
-            logger.error(f"Database error during chat: {e}")
-            return jsonify(create_error_response(
-                "Database service error. Please try again later.",
-                "database_error",
-                503,
-                request_id
-            )), 503
-
-        except LLMError as e:
-            logger.error(f"LLM error during chat: {e}")
-            return jsonify(create_error_response(
-                "AI service error. Please try again later.",
-                "llm_error",
-                503,
-                request_id
-            )), 503
-
-        except AgentError as e:
-            logger.error(f"Agent error during chat: {e}")
-            return jsonify(create_error_response(
-                "Agent service error. Please try again later.",
-                "agent_error",
-                503,
-                request_id
-            )), 503
-
-    except Exception as e:
-        log_exception(logger, e, "chat endpoint")
-        return jsonify(create_error_response(
-            "An unexpected error occurred. Please try again later.",
-            "internal_error",
-            500,
-            request_id
-        )), 500
+            "success": False,
+            "request_id": request_id
+        }), 500
 
 
-@api_bp.route('/tables', methods=['GET'])
-def get_tables():
-    """
-    Get information about available database tables.
-
-    Returns list of tables and their basic schema information.
-    Useful for understanding what data is available for querying.
-
-    Returns:
-        JSON response with table information
-    """
-    try:
-        request_id = get_request_id()
-        log_function_call("get_tables", (), {"request_id": request_id})
-
-        # Get database service
-        database_service = getattr(current_app, 'database_service', None)
-        if not database_service:
-            return jsonify(create_error_response(
-                "Database service not available",
-                "service_error",
-                503,
-                request_id
-            )), 503
-
-        # Get table information
-        table_names = database_service.get_table_names()
-
-        tables_info = {
-            "total_tables": len(table_names),
-            "table_names": table_names,
-            "database_type": database_service.engine.dialect.name if database_service.engine else "unknown"
-        }
-
-        logger.info(f"Retrieved information for {len(table_names)} tables")
-        return jsonify(create_success_response(tables_info, request_id)), 200
-
-    except DatabaseError as e:
-        log_exception(logger, e, "get_tables")
-        return jsonify(create_error_response(
-            "Unable to retrieve table information",
-            "database_error",
-            503,
-            request_id
-        )), 503
-
-    except Exception as e:
-        log_exception(logger, e, "get_tables")
-        return jsonify(create_error_response(
-            "Failed to retrieve table information",
-            "internal_error",
-            500,
-            request_id
-        )), 500
-
-
-# Blueprint error handlers (specific to this blueprint)
-@api_bp.errorhandler(413)
-def payload_too_large(error):
-    """Handle payload too large errors."""
-    logger.warning("Request payload too large")
-    return jsonify(create_error_response(
-        "Request payload too large",
-        "payload_error",
-        413
-    )), 413
-
-
-@api_bp.errorhandler(429)
-def rate_limit_exceeded(error):
-    """Handle rate limit errors."""
-    logger.warning("Rate limit exceeded")
-    return jsonify(create_error_response(
-        "Rate limit exceeded. Please try again later.",
-        "rate_limit_error",
-        429
-    )), 429
+# CORS preflight handler for streaming endpoint
+@api_bp.route('/chat/stream', methods=['OPTIONS'])
+def chat_stream_options():
+    """Handle CORS preflight requests for the streaming endpoint."""
+    response = Response()
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    response.headers['Access-Control-Max-Age'] = '86400'
+    return response

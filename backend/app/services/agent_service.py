@@ -31,18 +31,22 @@ Usage:
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, Future
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 
+from langchain.agents import AgentExecutor
 from langchain_community.agent_toolkits import create_sql_agent, SQLDatabaseToolkit
 from langchain_community.utilities import SQLDatabase
-from langchain.agents import AgentExecutor
 
 from backend.app.config import Config
 from backend.app.services.database_service import DatabaseService
 from backend.app.services.llm_service import LLMService
 from backend.app.utils.logger import get_logger, log_exception, log_function_call
+from backend.app.utils.react_loop_utils import (
+    process_intermediate_steps,
+    generate_step_summary,
+    generate_execution_flow
+)
 
-# Initialize logger for this module
 logger = get_logger(__name__)
 
 
@@ -64,48 +68,6 @@ class AgentExecutionError(AgentError):
 class AgentTimeoutError(AgentError):
     """Exception raised when agent execution exceeds timeout."""
     pass
-
-
-def _process_intermediate_steps(steps: List[Any]) -> List[Dict[str, Any]]:
-    """
-    Process and format intermediate execution steps.
-
-    Args:
-        steps: Raw intermediate steps from agent execution
-
-    Returns:
-        List of formatted step dictionaries
-    """
-    processed_steps = []
-
-    for i, step in enumerate(steps):
-        try:
-            # Extract action and observation from step
-            if isinstance(step, tuple) and len(step) >= 2:
-                action, observation = step[0], step[1]
-
-                step_info = {
-                    "step_number": i + 1,
-                    "action": {
-                        "tool": getattr(action, 'tool', 'unknown'),
-                        "tool_input": getattr(action, 'tool_input', ''),
-                        "log": getattr(action, 'log', '')
-                    },
-                    "observation": str(observation) if observation else "",
-                    "timestamp": datetime.now().isoformat()
-                }
-
-                processed_steps.append(step_info)
-
-        except Exception as err:
-            logger.warning(f"Error processing step {i}: {err}")
-            processed_steps.append({
-                "step_number": i + 1,
-                "error": f"Could not process step: {err}",
-                "raw_step": str(step)[:200] + "..." if len(str(step)) > 200 else str(step)
-            })
-
-    return processed_steps
 
 
 class AgentService:
@@ -365,19 +327,29 @@ class AgentService:
             "query_id": f"query_{int(time.time())}"
         }
 
-        # Include intermediate steps if requested
+        # Enhanced intermediate steps processing
         if include_intermediate_steps and "intermediate_steps" in custom_result:
-            formatted["intermediate_steps"] = _process_intermediate_steps(
-                custom_result["intermediate_steps"]
-            )
+            react_steps = process_intermediate_steps(custom_result["intermediate_steps"])
 
-        # Add metadata
+            formatted["react_loop"] = {
+                "steps": react_steps,
+                "total_steps": len(react_steps),
+                "step_summary": generate_step_summary(react_steps),
+                "execution_flow": generate_execution_flow(react_steps)
+            }
+
+        # Enhanced metadata
         formatted["metadata"] = {
             "agent_type": self.config.AGENT_TYPE,
             "model_name": self.config.GEMINI_MODEL_NAME,
             "database_type": self.database_service.engine.dialect.name if self.database_service.engine else "unknown",
             "total_iterations": len(custom_result.get("intermediate_steps", [])),
-            "success": True
+            "success": True,
+            "processing_details": {
+                "thought_extraction": "enabled",
+                "sql_formatting": "enabled",
+                "tool_categorization": "enabled"
+            }
         }
 
         return formatted

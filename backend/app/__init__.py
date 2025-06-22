@@ -32,6 +32,7 @@ from backend.app.config import Config, get_config, ConfigurationError
 from backend.app.services.agent_service import create_agent_service, AgentError
 from backend.app.services.database_service import create_database_service, DatabaseError
 from backend.app.services.llm_service import create_llm_service, LLMError
+from backend.app.services.streaming_agent_service import create_streaming_agent_service
 from backend.app.utils.logger import get_logger
 
 # Initialize logger for this module
@@ -171,13 +172,19 @@ def _initialize_services(app: Flask) -> None:
         logger.info("Creating LLM service")
         llm_service = create_llm_service(config)
 
-        logger.info("Creating agent service")
+        # Create traditional agent service (for backward compatibility)
+        logger.info("Creating traditional agent service")
         agent_service = create_agent_service(config, llm_service, database_service)
+
+        # Create streaming agent service (for real-time ReAct loop)
+        logger.info("Creating streaming agent service")
+        streaming_agent_service = create_streaming_agent_service(config, llm_service, database_service)
 
         # Store services in app context for access in routes
         app.database_service = database_service
         app.llm_service = llm_service
         app.agent_service = agent_service
+        app.streaming_agent_service = streaming_agent_service
 
         # Validate all services are healthy
         _validate_services_health(app)
