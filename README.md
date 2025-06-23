@@ -106,8 +106,8 @@ cd nl-to-sql-project
     GOOGLE_API_KEY="your_google_ai_api_key_here"
 
     # Gemini model to use for SQL agent
-    # Options: gemini-1.5-flash-latest, gemini-1.5-pro-latest, gemini-pro
-    GEMINI_MODEL_NAME="gemini-1.5-flash-latest"
+    # Options: gemini-2.5-flash, gemini-2.5-flash-lite-preview-06-17, etc.
+    GEMINI_MODEL_NAME="gemini-2.5-flash"
 
     # =============================================================================
     # Database Configuration
@@ -209,7 +209,7 @@ This project adopts a professional, multi-layered architecture to ensure long-te
 | **Frontend** | React, TypeScript, Vite, Tailwind CSS, Framer Motion | Provides a modern, type-safe, and highly interactive user interface with a fast development environment. Framer Motion is used for fluid animations that enhance the user experience.                                                                                                            |
 | **Backend** | Python, Flask | Flask is chosen for its lightweight and extensible nature, making it ideal for creating a focused and performant API backend. The backend is structured using professional patterns like Application Factory and Blueprints to promote modularity.                                               |
 | **AI Orchestration** | LangChain | LangChain is the canonical choice for building LLM-powered applications. Its `create_sql_agent` constructor provides a highly optimized and secure way to build a SQL agent, leveraging battle-tested prompt engineering to ensure reliability and safety.                                       |
-| **Language Model** | Google Gemini | Access to Google's powerful and efficient generative models is handled via the official `langchain-google-genai` package, with `gemini-1.5-flash-latest` providing an excellent balance of speed and capability.                                                                                 |
+| **Language Model** | Google Gemini | Access to Google's powerful and efficient generative models is handled via the official `langchain-google-genai` package, with `gemini-2.5-flash` providing an excellent balance of speed and capability.                                                                                 |
 | **Database** | SQLite (Chinook Sample) | The Chinook database is a well-known sample dataset modeling a digital music store. Its schema is complex enough (11 tables, multiple relationships) to robustly test the agent's reasoning abilities. SQLite is used for its simplicity and portability.                                        |
 | **Database Toolkit** | SQLAlchemy | LangChain uses SQLAlchemy as its underlying engine to communicate with SQL databases, ensuring a consistent and powerful interface that is dialect-agnostic.                                                                                                                                     |
 
